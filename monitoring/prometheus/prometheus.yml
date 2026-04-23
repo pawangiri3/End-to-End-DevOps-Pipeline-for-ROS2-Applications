@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 5s  # WHY: faster feedback for demo
+
+scrape_configs:
+  - job_name: 'ros2-app'
+
+    # WHY: Kubernetes service discovery
+    kubernetes_sd_configs:
+      - role: endpoints
+
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: ros2-service
+
+      - source_labels: [__meta_kubernetes_endpoint_port_name]
+        action: keep
+        regex: http
+
+  # OPTIONAL: self monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

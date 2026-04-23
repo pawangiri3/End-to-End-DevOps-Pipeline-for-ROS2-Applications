@@ -1,0 +1,13 @@
+<package format="3">
+  <name>hello_ros2</name>
+  <version>0.0.1</version>
+  <description>ROS2 Demo</description>
+
+  <maintainer email="devops@example.com">DevOps</maintainer>
+  <license>Apache-2.0</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+</package>
