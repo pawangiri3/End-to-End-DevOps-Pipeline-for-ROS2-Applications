@@ -1,7 +1,7 @@
 output "virtual_networks" {
   description = "Map of virtual networks"
   value = {
-    for k, v in azurerm_virtual_network.this : k => {
+    for k, v in azurerm_virtual_network.vnet : k => {
       id            = v.id
       name          = v.name
       address_space = v.address_space
@@ -12,7 +12,7 @@ output "virtual_networks" {
 output "subnets" {
   description = "Map of subnets"
   value = {
-    for k, v in azurerm_subnet.this : k => {
+    for k, v in azurerm_subnet.subnet : k => {
       id               = v.id
       name             = v.name
       address_prefixes = v.address_prefixes
@@ -23,7 +23,7 @@ output "subnets" {
 output "network_security_groups" {
   description = "Map of NSGs"
   value = {
-    for k, v in azurerm_network_security_group.this : k => {
+    for k, v in azurerm_network_security_group.nsg : k => {
       id   = v.id
       name = v.name
     }

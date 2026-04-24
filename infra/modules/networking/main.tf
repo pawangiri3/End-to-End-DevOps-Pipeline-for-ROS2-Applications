@@ -1,4 +1,4 @@
-resource "azurerm_virtual_network" "this" {
+resource "azurerm_virtual_network" "vnet" {
   for_each = var.virtual_networks
 
   name                = each.value.name
@@ -8,16 +8,16 @@ resource "azurerm_virtual_network" "this" {
   tags                = merge(each.value.tags, var.tags)
 }
 
-resource "azurerm_subnet" "this" {
-  for_each = local.subnets
+resource "azurerm_subnet" "subnet" {
+  for_each = var.subnets
 
-  name                 = "${each.value.vnet_key}-${each.key}"
+  name                 = each.value.name
   resource_group_name  = each.value.resource_group_name
   virtual_network_name = each.value.virtual_network_name
   address_prefixes     = each.value.address_prefixes
 }
 
-resource "azurerm_network_security_group" "this" {
+resource "azurerm_network_security_group" "nsg" {
   for_each = var.network_security_groups
 
   name                = each.key

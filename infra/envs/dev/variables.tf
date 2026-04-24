@@ -13,7 +13,7 @@ variable "location" {
 variable "project" {
   description = "Project name"
   type        = string
-  default     = "ros2"
+  default     = "rudra"
 }
 
 variable "common_tags" {
@@ -21,7 +21,7 @@ variable "common_tags" {
   type        = map(string)
   default = {
     Environment = "dev"
-    Project     = "ros2"
+    Project     = "rudra"
     ManagedBy   = "Terraform"
   }
 }
@@ -31,6 +31,7 @@ variable "resource_groups" {
   type = map(object({
     name     = string
     location = string
+
   }))
 }
 
@@ -66,11 +67,11 @@ variable "key_vaults" {
   description = "Map of key vaults to create"
   type = map(object({
     name                      = string
+    location                  = string
+    resource_group_name       = string
     sku_name                  = string
     tenant_id                 = optional(string, "")
     enable_rbac_authorization = optional(bool, true)
-    
-    sku_name = string
   }))
   default = {}
 }
@@ -80,6 +81,7 @@ variable "log_analytics_workspaces" {
   type = map(object({
     name              = string
     location          = string
+    resource_group_name = string
     sku               = string
     retention_in_days = optional(number, 30)
   }))
@@ -90,6 +92,8 @@ variable "container_registries" {
   description = "Map of container registries"
   type = map(object({
     name          = string
+    location      = string
+    resource_group_name = string
     sku           = string
     admin_enabled = optional(bool, false)
   }))
@@ -100,9 +104,16 @@ variable "kubernetes_clusters" {
   description = "Map of AKS clusters"
   type = map(object({
     name                = string
-    kubernetes_version = optional(string, "1.30.0")
-    node_count         = number
-    vm_size            = optional(string, "Standard_DS2_v2")
+    location            = string
+    resource_group_name = string
+    dns_prefix          = string
+    kubernetes_version  = optional(string, "1.30.0")
+    default_node_pool = object({
+      name            = string
+      node_count      = number
+      vm_size         = string
+      os_disk_size_gb = optional(number, 128)
+    })
   }))
   default = {}
 }

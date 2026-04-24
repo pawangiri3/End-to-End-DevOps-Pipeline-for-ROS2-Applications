@@ -2,15 +2,15 @@ terraform {
   required_providers {
     azurerm = {
       source  = "hashicorp/azurerm"
-      version = "4.41.0"
+      version = "4.70.0"
     }
   }
-  # backend "azurerm" {
-  #   resource_group_name  = "Do_not_delete_rg"
-  #   storage_account_name = "donotdelete2025"
-  #   container_name       = "tfstate"
-  #   key                  = "dev.tfstate"
-  # }
+  backend "azurerm" {
+    resource_group_name  = "Do_not_delete_rg"
+    storage_account_name = "donotdelete2026"
+    container_name       = "tfstate"
+    key                  = "dev.tfstate"
+  }
 }
 
 provider "azurerm" {
