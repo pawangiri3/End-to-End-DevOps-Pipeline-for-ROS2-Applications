@@ -1,0 +1,34 @@
+version: "3.9"
+
+# ── ROS2 Robot Dashboard — local dev compose ───────────────────────────────
+# Usage:
+#   docker compose up --build          # build + start
+#   docker compose down                # stop + remove containers
+# ──────────────────────────────────────────────────────────────────────────
+
+services:
+  robot-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    image: ros2-robot-dashboard:dev
+    container_name: ros2_dashboard
+    ports:
+      - "8000:8000"
+    environment:
+      SECRET_KEY:       "dev-only-secret-key-not-for-production"
+      LOG_LEVEL:        "DEBUG"
+      LOG_FORMAT:       "json"
+      ROS2_ENABLED:     "true"       # set "false" for pure-simulation mode
+      MAX_LOG_ENTRIES:  "500"
+      ROS_DOMAIN_ID:    "0"
+    restart: unless-stopped
+    healthcheck:
+      test:     ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout:  5s
+      retries:  3
+      start_period: 10s
+    # Share the host ROS2 DDS network (optional — enables topic echo from host)
+    network_mode: host   # remove if host ROS2 not needed
