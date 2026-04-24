@@ -1,0 +1,126 @@
+trigger:
+- main
+
+variables:
+  ACR_NAME: youracrname
+  IMAGE_NAME: ros2-app
+  TAG: $(Build.BuildId)
+  AKS_RG: your-aks-rg
+  AKS_CLUSTER: your-aks-cluster
+
+stages:
+
+# 🔹 STAGE 1 - BUILD & TEST
+- stage: Build_Test
+  displayName: "Build and Test ROS2 App"
+  jobs:
+  - job: Build
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+
+    - script: |
+        echo "Installing ROS2 Jazzy..."
+        sudo apt update
+        sudo apt install -y curl gnupg lsb-release
+        sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
+        echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/ros2.list
+        sudo apt update
+        sudo apt install -y ros-jazzy-desktop python3-colcon-common-extensions
+      displayName: "Install ROS2"
+
+    - script: |
+        source /opt/ros/jazzy/setup.bash
+        cd app/ros2_ws
+        colcon build
+      displayName: "Build ROS2 Workspace"
+
+    - script: |
+        source /opt/ros/jazzy/setup.bash
+        cd app/ros2_ws
+        colcon test
+      displayName: "Run Tests"
+
+---
+
+# 🔹 STAGE 2 - DOCKER BUILD & PUSH
+- stage: Docker_Build_Push
+  displayName: "Build & Push Docker Image"
+  dependsOn: Build_Test
+  condition: succeeded()
+
+  jobs:
+  - job: Docker
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - checkout: self
+
+    - task: Docker@2
+      displayName: "Build and Push Image"
+      inputs:
+        command: buildAndPush
+        repository: $(IMAGE_NAME)
+        dockerfile: docker/Dockerfile
+        containerRegistry: ACR-Service-Connection
+        tags: |
+          $(TAG)
+
+---
+
+# 🔹 STAGE 3 - SECURITY SCAN
+- stage: Security_Scan
+  displayName: "Container Security Scan"
+  dependsOn: Docker_Build_Push
+  condition: succeeded()
+
+  jobs:
+  - job: Scan
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - script: |
+        docker pull $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
+        docker run --rm aquasec/trivy image $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
+      displayName: "Run Trivy Scan"
+
+---
+
+# 🔹 STAGE 4 - DEPLOY TO AKS
+- stage: Deploy
+  displayName: "Deploy to AKS"
+  dependsOn: Security_Scan
+  condition: succeeded()
+
+  jobs:
+  - deployment: DeployToAKS
+    environment: dev
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          - task: Kubernetes@1
+            displayName: "Deploy to AKS"
+            inputs:
+              connectionType: Azure Resource Manager
+              azureSubscriptionEndpoint: Azure-Service-Connection
+              azureResourceGroup: $(AKS_RG)
+              kubernetesCluster: $(AKS_CLUSTER)
+              command: apply
+              useConfigurationFile: true
+              configuration: |
+                k8s/deployment.yaml
+                k8s/service.yaml
+                k8s/ingress.yaml
+
+          - script: |
+              kubectl set image deployment/ros2-app ros2-container=$(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
+            displayName: "Update Image"
