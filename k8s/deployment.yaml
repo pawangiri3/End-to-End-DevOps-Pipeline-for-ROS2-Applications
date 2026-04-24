@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: ros2
-          image: ghcr.io/YOUR_USERNAME/ros2-app:latest
+          image: rudradevacr.azurecr.io/rudra-2.0:v3
           ports:
             - containerPort: 8000  # metrics
 

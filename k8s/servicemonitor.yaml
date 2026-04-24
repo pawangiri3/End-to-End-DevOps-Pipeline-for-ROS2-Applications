@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: rudra-monitor
+  labels:
+    release: monitoring
+spec:
+  selector:
+    matchLabels:
+      app: rudra
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
