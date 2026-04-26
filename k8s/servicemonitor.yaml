@@ -7,7 +7,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: rudra
+      app: ros2
   endpoints:
     - port: http
       path: /metrics

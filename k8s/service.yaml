@@ -6,7 +6,7 @@ spec:
   type: LoadBalancer
   selector:
     app: ros2
-ports:
-  - name: http
-    port: 80
-    targetPort: 8000
+  ports:
+   - name: http
+     port: 80
+     targetPort: 8000

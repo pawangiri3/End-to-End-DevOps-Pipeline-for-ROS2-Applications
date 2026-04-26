@@ -1,17 +1,20 @@
 """
-ros_node.py
------------
+app/ros_node.py
+---------------
 ROS2 integration layer.
 
-• Publishes commands to /robot_command (std_msgs/String)
-• Subscribes to   /robot_status  (std_msgs/String)
+• Publishes commands to /robot_command  (std_msgs/String)
+• Subscribes to   /robot_status         (std_msgs/String)
 • Simulates robot state internally when a real robot is absent
 • Gracefully degrades when rclpy is not available (ROS2_ENABLED=False)
+
+Dependency rule (no cycles):
+  app.config  →  app.metrics  →  app.ros_node
+  app.main is NEVER imported here.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import random
 import threading
@@ -22,7 +25,15 @@ from typing import Any, Deque, Dict
 
 from app.config import settings
 
+# ── Import Prometheus counter from app.metrics — NEVER from app.main ───────
+# Circular import chain that existed before this fix:
+#   ros_node  →  app.main  →  ros_node   (BROKEN)
+# Fixed dependency graph (acyclic):
+#   app.config  →  app.metrics  →  app.ros_node  →  app.routes  →  app.main
+from app.metrics import command_counter, update_robot_status_gauge
+
 logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Try to import ROS2 — fall back gracefully when unavailable
@@ -43,7 +54,7 @@ else:
 
 
 # ---------------------------------------------------------------------------
-# Shared application state (singleton, thread-safe primitives)
+# Shared application state  (singleton, thread-safe primitives)
 # ---------------------------------------------------------------------------
 class RobotState:
     """Thread-safe container for robot metrics and status."""
@@ -51,12 +62,12 @@ class RobotState:
     VALID_STATUSES = {"Idle", "Moving", "Turning Left", "Turning Right", "Stopped"}
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.status: str = "Idle"
-        self.command_count: int = 0
-        self.log_buffer: Deque[Dict[str, Any]] = deque(maxlen=settings.MAX_LOG_ENTRIES)
-        self.last_command: str = ""
-        self.uptime_start: float = time.time()
+        self._lock        = threading.Lock()
+        self.status       : str              = "Idle"
+        self.command_count: int              = 0
+        self.log_buffer   : Deque[Dict[str, Any]] = deque(maxlen=settings.MAX_LOG_ENTRIES)
+        self.last_command : str              = ""
+        self.uptime_start : float            = time.time()
 
     # -- Status ----------------------------------------------------------
 
@@ -66,6 +77,8 @@ class RobotState:
             return
         with self._lock:
             self.status = new_status
+        # Keep Prometheus gauge in sync (lock already released above)
+        update_robot_status_gauge(new_status)
 
     def get_status(self) -> str:
         with self._lock:
@@ -76,7 +89,13 @@ class RobotState:
     def record_command(self, command: str) -> None:
         with self._lock:
             self.command_count += 1
-            self.last_command = command
+            self.last_command  = command
+
+        # ── Prometheus increment ─────────────────────────────────────────
+        # command_counter is imported from app.metrics — no circular dep.
+        # The `command` label lets Grafana break down by MOVE_FORWARD etc.
+        command_counter.labels(command=command).inc()
+
         self._append_log("COMMAND", f"Received command: {command}", {"command": command})
 
     # -- Logs ------------------------------------------------------------
@@ -84,8 +103,8 @@ class RobotState:
     def _append_log(self, level: str, message: str, extra: dict | None = None) -> None:
         entry: Dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": level,
-            "message": message,
+            "level":     level,
+            "message":   message,
         }
         if extra:
             entry.update(extra)
@@ -102,9 +121,9 @@ class RobotState:
     def get_metrics(self) -> Dict[str, Any]:
         with self._lock:
             return {
-                "command_count": self.command_count,
+                "command_count":  self.command_count,
                 "current_status": self.status,
-                "last_command": self.last_command,
+                "last_command":   self.last_command,
                 "uptime_seconds": round(time.time() - self.uptime_start, 2),
             }
 
@@ -116,28 +135,28 @@ robot_state = RobotState()
 
 
 # ---------------------------------------------------------------------------
-# Simulation helpers (used when ROS2 is unavailable)
+# Simulation helpers  (used when ROS2 is unavailable)
 # ---------------------------------------------------------------------------
 _STATUS_TRANSITIONS: Dict[str, str] = {
     "MOVE_FORWARD": "Moving",
-    "TURN_LEFT": "Turning Left",
-    "TURN_RIGHT": "Turning Right",
-    "STOP": "Stopped",
-    "RESET": "Idle",
+    "TURN_LEFT":    "Turning Left",
+    "TURN_RIGHT":   "Turning Right",
+    "STOP":         "Stopped",
+    "RESET":        "Idle",
 }
 
 _SETTLE_DELAYS: Dict[str, float] = {
-    "Moving": 3.0,
-    "Turning Left": 2.0,
+    "Moving":        3.0,
+    "Turning Left":  2.0,
     "Turning Right": 2.0,
-    "Stopped": 1.5,
+    "Stopped":       1.5,
 }
 
 
 def _simulate_robot_response(command: str) -> None:
     """Mimic robot behaviour in a background thread (no real ROS2 needed)."""
     new_status = _STATUS_TRANSITIONS.get(command, "Idle")
-    robot_state.set_status(new_status)
+    robot_state.set_status(new_status)           # also updates Prometheus gauge
     robot_state._append_log(
         "INFO",
         f"[SIM] Robot transitioned to '{new_status}'",
@@ -145,7 +164,7 @@ def _simulate_robot_response(command: str) -> None:
     )
 
     settle_time = _SETTLE_DELAYS.get(new_status, 2.0)
-    time.sleep(settle_time + random.uniform(0, 0.5))  # small jitter
+    time.sleep(settle_time + random.uniform(0, 0.5))   # small jitter
 
     # Auto-return to Idle unless STOP was issued
     if new_status not in {"Stopped", "Idle"}:
@@ -158,7 +177,7 @@ def _simulate_robot_response(command: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ROS2 Node class (only instantiated when rclpy is available)
+# ROS2 Node class  (only instantiated when rclpy is available)
 # ---------------------------------------------------------------------------
 if _ROS2_AVAILABLE:
 
@@ -173,14 +192,12 @@ if _ROS2_AVAILABLE:
         def __init__(self) -> None:
             super().__init__(settings.ROS2_NODE_NAME)
 
-            # Publisher
             self._pub = self.create_publisher(
                 String,
                 settings.COMMAND_TOPIC,
                 qos_profile=10,
             )
 
-            # Subscriber
             self._sub = self.create_subscription(
                 String,
                 settings.STATUS_TOPIC,
@@ -188,21 +205,19 @@ if _ROS2_AVAILABLE:
                 qos_profile=10,
             )
 
-            # Timer: publish a heartbeat every 5 s
             self.create_timer(5.0, self._heartbeat_callback)
 
             self.get_logger().info(
                 f"RobotCommandNode started — pub={settings.COMMAND_TOPIC} "
                 f"sub={settings.STATUS_TOPIC}"
             )
-            robot_state._append_log("INFO", "ROS2 node initialised", {"node": settings.ROS2_NODE_NAME})
-
-        # -- Callbacks ---------------------------------------------------
+            robot_state._append_log(
+                "INFO", "ROS2 node initialised", {"node": settings.ROS2_NODE_NAME}
+            )
 
         def _status_callback(self, msg: Any) -> None:
-            """Handle incoming status messages from the robot."""
             status = msg.data.strip()
-            robot_state.set_status(status)
+            robot_state.set_status(status)         # updates gauge inside set_status
             robot_state._append_log(
                 "INFO",
                 f"Status update received: {status}",
@@ -216,20 +231,16 @@ if _ROS2_AVAILABLE:
                 {"uptime": robot_state.get_metrics()["uptime_seconds"]},
             )
 
-        # -- Command API -------------------------------------------------
-
         def publish_command(self, command: str) -> None:
-            """Publish a command string to /robot_command and simulate internally."""
-            msg = String()
+            msg      = String()
             msg.data = command
             self._pub.publish(msg)
-            robot_state.record_command(command)
+            robot_state.record_command(command)   # counter.inc() happens inside here
             robot_state._append_log(
                 "INFO",
                 f"Published command '{command}' to {settings.COMMAND_TOPIC}",
                 {"topic": settings.COMMAND_TOPIC, "command": command},
             )
-            # Also simulate the response (since we have no real subscriber loop here)
             thread = threading.Thread(
                 target=_simulate_robot_response,
                 args=(command,),
@@ -245,9 +256,9 @@ class ROS2Manager:
     """Lifecycle manager: start / stop the ROS2 node in a background thread."""
 
     def __init__(self) -> None:
-        self._node: "RobotCommandNode | None" = None
-        self._thread: threading.Thread | None = None
-        self._running = False
+        self._node   : "RobotCommandNode | None" = None
+        self._thread : threading.Thread | None   = None
+        self._running: bool                      = False
 
     def start(self) -> None:
         if _ROS2_AVAILABLE:
@@ -258,7 +269,7 @@ class ROS2Manager:
     def _start_ros2(self) -> None:
         logger.info("Initialising ROS2 runtime …")
         rclpy.init()
-        self._node = RobotCommandNode()
+        self._node    = RobotCommandNode()
         self._running = True
 
         def _spin() -> None:
@@ -273,7 +284,9 @@ class ROS2Manager:
 
     def _start_simulation(self) -> None:
         logger.info("Starting in SIMULATION mode (no ROS2)")
-        robot_state._append_log("INFO", "Running in simulation mode — no real robot connected")
+        robot_state._append_log(
+            "INFO", "Running in simulation mode — no real robot connected"
+        )
 
     def stop(self) -> None:
         if _ROS2_AVAILABLE and self._node:
@@ -286,11 +299,10 @@ class ROS2Manager:
 
     def publish_command(self, command: str) -> None:
         """Entry point called by API routes."""
-        robot_state.record_command(command)
+        robot_state.record_command(command)        # Prometheus counter incremented here
         if _ROS2_AVAILABLE and self._node:
             self._node.publish_command(command)
         else:
-            # Pure simulation path
             thread = threading.Thread(
                 target=_simulate_robot_response,
                 args=(command,),
@@ -299,5 +311,5 @@ class ROS2Manager:
             thread.start()
 
 
-# Module-level manager instance
+# Module-level singleton
 ros2_manager = ROS2Manager()
