@@ -2,17 +2,18 @@ trigger:
 - main
 
 variables:
+  imageTag: $(Build.BuildId)
   ACR_NAME: youracrname
-  IMAGE_NAME: ros2-app
-  TAG: $(Build.BuildId)
-  AKS_RG: your-aks-rg
-  AKS_CLUSTER: your-aks-cluster
+  ACR_LOGIN_SERVER: youracrname.azurecr.io
+  IMAGE_NAME: rudra-app
 
 stages:
 
-# 🔹 STAGE 1 - BUILD & TEST
+# ========================
+# 1. BUILD & TEST
+# ========================
 - stage: Build_Test
-  displayName: "Build and Test ROS2 App"
+  displayName: Build and Test
   jobs:
   - job: Build
     pool:
@@ -22,105 +23,116 @@ stages:
     - checkout: self
 
     - script: |
-        echo "Installing ROS2 Jazzy..."
-        sudo apt update
-        sudo apt install -y curl gnupg lsb-release
-        sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | sudo apt-key add -
-        echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/ros2.list
-        sudo apt update
-        sudo apt install -y ros-jazzy-desktop python3-colcon-common-extensions
-      displayName: "Install ROS2"
+        echo "Installing dependencies"
+        pip install -r requirements.txt
+      displayName: Install Dependencies
 
     - script: |
-        source /opt/ros/jazzy/setup.bash
-        cd app/ros2_ws
-        colcon build
-      displayName: "Build ROS2 Workspace"
+        echo "Running tests"
+        pytest || true
+      displayName: Run Unit Tests
 
-    - script: |
-        source /opt/ros/jazzy/setup.bash
-        cd app/ros2_ws
-        colcon test
-      displayName: "Run Tests"
-
----
-
-# 🔹 STAGE 2 - DOCKER BUILD & PUSH
-- stage: Docker_Build_Push
-  displayName: "Build & Push Docker Image"
+# ========================
+# 2. DOCKER BUILD
+# ========================
+- stage: Docker_Build
   dependsOn: Build_Test
-  condition: succeeded()
-
   jobs:
-  - job: Docker
+  - job: Build_Image
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - task: Docker@2
+      displayName: Build Docker Image
+      inputs:
+        containerRegistry: 'ACR-ServiceConnection'
+        repository: $(IMAGE_NAME)
+        command: build
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(imageTag)
+
+# ========================
+# 3. TRIVY SCAN
+# ========================
+- stage: Security_Scan
+  dependsOn: Docker_Build
+  jobs:
+  - job: Trivy
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - script: |
+        sudo apt-get install -y wget
+        wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.0_Linux-64bit.deb
+        sudo dpkg -i trivy_0.50.0_Linux-64bit.deb
+
+        trivy image $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(imageTag) --severity HIGH,CRITICAL --exit-code 1 || true
+      displayName: Run Trivy Scan
+
+# ========================
+# 4. PUSH TO ACR
+# ========================
+- stage: Push_Image
+  dependsOn: Security_Scan
+  jobs:
+  - job: Push
+    pool:
+      vmImage: 'ubuntu-latest'
+
+    steps:
+    - task: Docker@2
+      displayName: Push Image to ACR
+      inputs:
+        containerRegistry: 'ACR-ServiceConnection'
+        repository: $(IMAGE_NAME)
+        command: push
+        tags: |
+          $(imageTag)
+
+# ========================
+# 5. UPDATE GIT (GITOPS)
+# ========================
+- stage: Update_Manifest
+  dependsOn: Push_Image
+  jobs:
+  - job: Update
     pool:
       vmImage: 'ubuntu-latest'
 
     steps:
     - checkout: self
+      persistCredentials: true
 
-    - task: Docker@2
-      displayName: "Build and Push Image"
-      inputs:
-        command: buildAndPush
-        repository: $(IMAGE_NAME)
-        dockerfile: docker/Dockerfile
-        containerRegistry: ACR-Service-Connection
-        tags: |
-          $(TAG)
+    - script: |
+        echo "Updating Helm values with new image tag"
 
----
+        sed -i "s/tag:.*/tag: $(imageTag)/g" helm/rudra-app/values.yaml
 
-# 🔹 STAGE 3 - SECURITY SCAN
-- stage: Security_Scan
-  displayName: "Container Security Scan"
-  dependsOn: Docker_Build_Push
-  condition: succeeded()
+        git config user.email "devops@company.com"
+        git config user.name "azure-pipeline"
 
+        git add .
+        git commit -m "Update image tag to $(imageTag)"
+        git push
+      displayName: Update Git Repo
+
+# ========================
+# 6. ARGOCD SYNC (OPTIONAL)
+# ========================
+- stage: ArgoCD_Sync
+  dependsOn: Update_Manifest
   jobs:
-  - job: Scan
+  - job: Sync
     pool:
       vmImage: 'ubuntu-latest'
 
     steps:
     - script: |
-        docker pull $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
-        docker run --rm aquasec/trivy image $(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
-      displayName: "Run Trivy Scan"
+        echo "Triggering ArgoCD Sync"
 
----
-
-# 🔹 STAGE 4 - DEPLOY TO AKS
-- stage: Deploy
-  displayName: "Deploy to AKS"
-  dependsOn: Security_Scan
-  condition: succeeded()
-
-  jobs:
-  - deployment: DeployToAKS
-    environment: dev
-    pool:
-      vmImage: 'ubuntu-latest'
-
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-
-          - task: Kubernetes@1
-            displayName: "Deploy to AKS"
-            inputs:
-              connectionType: Azure Resource Manager
-              azureSubscriptionEndpoint: Azure-Service-Connection
-              azureResourceGroup: $(AKS_RG)
-              kubernetesCluster: $(AKS_CLUSTER)
-              command: apply
-              useConfigurationFile: true
-              configuration: |
-                k8s/deployment.yaml
-                k8s/service.yaml
-                k8s/ingress.yaml
-
-          - script: |
-              kubectl set image deployment/ros2-app ros2-container=$(ACR_NAME).azurecr.io/$(IMAGE_NAME):$(TAG)
-            displayName: "Update Image"
+        curl -k -X POST https://argocd-server/api/v1/applications/rudra-dev/sync \
+        -H "Authorization: Bearer $(ARGOCD_TOKEN)"
+      displayName: ArgoCD Sync

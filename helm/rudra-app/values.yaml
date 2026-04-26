@@ -1,11 +1,16 @@
 replicaCount: 1
 
 image:
-  repository: your-acr.azurecr.io/rudra-app
+  repository: rudradevacr.azurecr.io/rudra-2.0
   tag: latest
 
 service:
   port: 80
 
 app:
-  label: ros2-app
+  label: ros2
+
+ingress:
+  enabled: true
+  host: ros2.local
+  tlsSecretName: tls-secret
