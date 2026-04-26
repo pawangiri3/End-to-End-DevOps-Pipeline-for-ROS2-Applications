@@ -1,4 +1,4 @@
-# 🤖 ROS2 Robot Command Center
+# 🤖 Rudra 2.0 Robot Command Center
 
 > Production-ready FastAPI + ROS2 Jazzy dashboard — built for DevOps & Kubernetes interviews.
 
