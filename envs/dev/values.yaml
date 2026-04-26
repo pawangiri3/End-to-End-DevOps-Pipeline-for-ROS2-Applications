@@ -1,7 +1,16 @@
 replicaCount: 1
 
 image:
-  tag: dev
+  repository: rudradevacr.azurecr.io/rudra-2.0
+  tag: v6
+
+service:
+  port: 80
 
 app:
-  label: ros2-app
+  label: ros2
+
+ingress:
+  enabled: true
+  host: ros2.local
+  tlsSecretName: tls-secret
