@@ -7,7 +7,9 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: ros2
+      app: ros2   #✅ SAME label
+  namespaceSelector:
+    any: true
   endpoints:
     - port: http
       path: /metrics
