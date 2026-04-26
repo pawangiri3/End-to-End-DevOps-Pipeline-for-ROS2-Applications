@@ -17,6 +17,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: ros2-service
+                name: rudra-service
                 port:
                   number: 80
