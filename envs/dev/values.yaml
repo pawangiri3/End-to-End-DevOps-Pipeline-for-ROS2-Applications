@@ -1,0 +1,7 @@
+replicaCount: 1
+
+image:
+  tag: dev
+
+app:
+  label: ros2-app

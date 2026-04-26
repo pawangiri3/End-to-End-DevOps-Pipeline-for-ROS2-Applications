@@ -1,0 +1,24 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rudra-dev
+  namespace: argocd
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/pawangiri3/End-to-End-DevOps-Pipeline-for-ROS2-Applications.git
+    targetRevision: HEAD
+    path: helm/rudra-app
+    helm:
+      valueFiles:
+        - ../../envs/dev/values.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,11 @@
+replicaCount: 1
+
+image:
+  repository: your-acr.azurecr.io/rudra-app
+  tag: latest
+
+service:
+  port: 80
+
+app:
+  label: ros2-app
