@@ -1,0 +1,192 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - README.md
+      - docs/*
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  imageTag: $(Build.BuildId)
+
+  ACR_NAME: rudradevacr
+  ACR_LOGIN_SERVER: rudradevacr.azurecr.io
+  IMAGE_NAME: rudra-app
+
+  dockerServiceConnection: 'my-acr-connection'
+
+stages:
+
+# ========================
+# 1. BUILD & TEST
+# ========================
+- stage: Build_Test
+  displayName: "🔨 Build & Test"
+  jobs:
+  - job: Build
+    pool:
+      name: Rudra
+
+    steps:
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.10'
+
+    - script: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+      displayName: Install Dependencies
+
+    # OPTIONAL (future-ready)
+    - script: |
+        echo "Run unit tests here"
+      displayName: Run Tests
+      continueOnError: true
+
+
+# ========================
+# 2. DOCKER BUILD
+# ========================
+- stage: Docker_Build
+  displayName: "🐳 Docker Build"
+  dependsOn: Build_Test
+  condition: succeeded()
+  jobs:
+  - job: Build_Image
+    pool:
+      name: Rudra
+
+    steps:
+    - checkout: self
+
+    - powershell: |
+        Write-Host "Building Docker image..."
+        docker build -t $(IMAGE_NAME):$(imageTag) .
+
+        Write-Host "Verify image..."
+        docker images | findstr $(IMAGE_NAME)
+      displayName: Build Image
+
+
+# ========================
+# 3. TRIVY SCAN
+# ========================
+- stage: Security_Scan
+  displayName: "🔐 Security Scan (Trivy)"
+  dependsOn: Docker_Build
+  condition: succeededOrFailed()
+  jobs:
+  - job: Trivy
+    pool:
+      name: Rudra
+
+    steps:
+    - task: trivy@1
+      displayName: "Trivy Image Scan"
+      continueOnError: true   # non-blocking (dev friendly)
+      inputs:
+        image: '$(IMAGE_NAME):$(imageTag)'
+        severity: 'HIGH,CRITICAL'
+        ignoreUnfixed: true
+        exitCode: 0
+
+
+# ========================
+# 4. PUSH IMAGE
+# ========================
+- stage: Push_Image
+  displayName: "📦 Push to ACR"
+  dependsOn: Security_Scan
+  condition: succeeded()
+  jobs:
+  - job: Push
+    pool:
+      name: Rudra
+
+    steps:
+    - task: Docker@2
+      displayName: "Login to ACR"
+      inputs:
+        command: login
+        containerRegistry: $(dockerServiceConnection)
+
+    - powershell: |
+        Write-Host "Tagging image..."
+        docker tag $(IMAGE_NAME):$(imageTag) $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(imageTag)
+
+        Write-Host "Pushing image..."
+        docker push $(ACR_LOGIN_SERVER)/$(IMAGE_NAME):$(imageTag)
+      displayName: Tag & Push
+
+
+# ========================
+# 5. UPDATE MANIFEST (GitOps)
+# ========================
+- stage: Update_Manifest
+  displayName: "📝 GitOps Update"
+  dependsOn: Push_Image
+  condition: succeeded()
+  jobs:
+  - job: Update
+    pool:
+      name: Rudra
+
+    steps:
+    - checkout: self
+      persistCredentials: true
+
+    - powershell: |
+        Write-Host "Preparing Git branch..."
+
+        git fetch origin
+        git checkout main
+        git pull origin main --rebase
+
+        Write-Host "Updating Helm values..."
+
+        (Get-Content helm/rudra-app/values.yaml) `
+          -replace "tag:.*", "tag: $(imageTag)" |
+          Set-Content helm/rudra-app/values.yaml
+
+        git config user.email "devops@company.com"
+        git config user.name "azure-pipeline"
+
+        git add helm/rudra-app/values.yaml
+
+        git commit -m "ci: update image tag $(imageTag) [skip ci]"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "No changes detected"
+        }
+
+        Write-Host "Pushing changes..."
+        git push origin main
+
+      displayName: Update Helm Values
+
+
+# ========================
+# 6. ARGOCD SYNC
+# ========================
+- stage: ArgoCD_Sync
+  displayName: "🚀 ArgoCD Sync"
+  dependsOn: Update_Manifest
+  condition: succeeded()
+  jobs:
+  - job: Sync
+    pool:
+      name: Rudra
+
+    steps:
+    - script: |
+        echo "Triggering ArgoCD Sync..."
+
+        curl -k -X POST https://argocd-server/api/v1/applications/rudra-dev/sync ^
+          -H "Authorization: Bearer $(ARGOCD_TOKEN)"
+      displayName: Argo Sync
+      continueOnError: true   # avoid pipeline break
